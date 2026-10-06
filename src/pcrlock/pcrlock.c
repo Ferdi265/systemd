@@ -85,6 +85,7 @@ static bool arg_raw_description = false;
 static char *arg_location_start = NULL;
 static char *arg_location_end = NULL;
 static TPM2_HANDLE arg_nv_index = 0;
+static bool arg_isolate_pin_private = false;
 static RecoveryPinMode arg_recovery_pin = RECOVERY_PIN_HIDE;
 static char *arg_policy_path = NULL;
 static bool arg_force = false;
@@ -4065,6 +4066,34 @@ static int make_policy(bool force, RecoveryPinMode recovery_pin_mode) {
 
         log_info("Written new policy to '%s' and digest to TPM2 NV index 0x%x.", path, nv_index);
 
+        if (arg_isolate_pin_private) {
+                struct iovec pin_private_placeholder = {
+                        .iov_base = NULL,
+                        .iov_len = 0,
+                };
+
+                _cleanup_(sd_json_variant_unrefp) sd_json_variant *isolated_configuration_json = NULL;
+                r = sd_json_buildo(
+                                &isolated_configuration_json,
+                                SD_JSON_BUILD_PAIR_STRING("pcrBank", tpm2_hash_alg_to_string(el->primary_algorithm)),
+                                SD_JSON_BUILD_PAIR_VARIANT("pcrValues", new_prediction_json),
+                                SD_JSON_BUILD_PAIR_INTEGER("nvIndex", nv_index),
+                                JSON_BUILD_PAIR_IOVEC_BASE64("nvHandle", &nv_blob),
+                                JSON_BUILD_PAIR_IOVEC_BASE64("nvPublic", &nv_public_blob),
+                                JSON_BUILD_PAIR_IOVEC_BASE64("srkHandle", &srk_blob),
+                                JSON_BUILD_PAIR_IOVEC_BASE64("pinPublic", &pin_public),
+                                JSON_BUILD_PAIR_IOVEC_BASE64("pinPrivate", &pin_private_placeholder));
+                if (r < 0)
+                        return log_error_errno(r, "Failed to generate JSON: %m");
+
+                freep(&text);
+                r = sd_json_variant_format(isolated_configuration_json, 0, &text);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to format isolated configuration to JSON: %m");
+
+                log_info("Generated isolated boot policy for ESP.");
+        }
+
         (void) write_boot_policy_file(text);
 
         log_info("Overall time spent: %s", FORMAT_TIMESPAN(usec_sub_unsigned(now(CLOCK_MONOTONIC), start_usec), 1));
@@ -5468,6 +5497,14 @@ static int parse_argv(int argc, char *argv[], char ***ret_args) {
                         arg_recovery_pin = recovery_pin_mode_from_string(opts.arg);
                         if (arg_recovery_pin < 0)
                                 return log_error_errno(arg_recovery_pin, "Failed to parse --recovery-pin= mode: %s", opts.arg);
+                        break;
+
+                OPTION_LONG("isolate-pin-private", "BOOL",
+                            "Don't store NV index administration authorization "
+                            "(pinPrivate) in the unencrypted ESP"):
+                        r = parse_boolean_argument("--isolate-pin-private", opts.arg, &arg_isolate_pin_private);
+                        if (r < 0)
+                                return r;
                         break;
 
                 OPTION_LONG("pcrlock", "PATH",
