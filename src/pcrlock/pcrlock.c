@@ -834,8 +834,11 @@ static int event_log_record_extract_firmware_description(EventLogRecord *rec) {
                 }
 
                 load = rec->firmware_payload;
-                if (load->lengthOfDevicePath !=
-                    rec->firmware_payload_size - offsetof(UEFI_IMAGE_LOAD_EVENT, devicePath)) {
+                size_t expected_size = rec->firmware_payload_size - offsetof(UEFI_IMAGE_LOAD_EVENT, devicePath);
+                if (load->lengthOfDevicePath < expected_size &&
+                    memeqzero((const uint8_t *) load->devicePath + load->lengthOfDevicePath, expected_size - load->lengthOfDevicePath)) {
+                        /* some venders have trailing zeros after device path */
+                } else if (load->lengthOfDevicePath != expected_size) {
                         log_warning("Device path size does not match, ignoring.");
                         goto invalid;
                 }
